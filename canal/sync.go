@@ -95,12 +95,12 @@ func (c *Canal) runSyncBinlog() error {
 			c.cfg.Logger.Infof("rotate binlog to %s", pos)
 			savePos = true
 			force = true
-			if err = c.eventHandler.OnRotate(e); err != nil {
+			if err = c.eventHandler.OnRotate(e, pos, ev.RawData); err != nil {
 				return errors.Trace(err)
 			}
 		case *replication.RowsEvent:
 			// we only focus row based event
-			err = c.handleRowsEvent(ev)
+			err = c.handleRowsEvent(ev, pos)
 			if err != nil {
 				e := errors.Cause(err)
 				// if error is not ErrExcludedTable or ErrTableNotExist or ErrMissingTableMeta, stop canal
@@ -115,7 +115,7 @@ func (c *Canal) runSyncBinlog() error {
 		case *replication.XIDEvent:
 			savePos = true
 			// try to save the position later
-			if err := c.eventHandler.OnXID(pos); err != nil {
+			if err := c.eventHandler.OnXID(e, pos, ev.RawData); err != nil {
 				return errors.Trace(err)
 			}
 			if e.GSet != nil {
@@ -127,7 +127,7 @@ func (c *Canal) runSyncBinlog() error {
 			if err != nil {
 				return errors.Trace(err)
 			}
-			if err := c.eventHandler.OnGTID(gtid); err != nil {
+			if err := c.eventHandler.OnMariaGTID(e, gtid, pos, ev.RawData); err != nil {
 				return errors.Trace(err)
 			}
 		case *replication.GTIDEvent:
@@ -136,7 +136,7 @@ func (c *Canal) runSyncBinlog() error {
 			if err != nil {
 				return errors.Trace(err)
 			}
-			if err := c.eventHandler.OnGTID(gtid); err != nil {
+			if err := c.eventHandler.OnGTID(e, gtid, pos, ev.RawData); err != nil {
 				return errors.Trace(err)
 			}
 		case *replication.QueryEvent:
@@ -159,7 +159,7 @@ func (c *Canal) runSyncBinlog() error {
 					savePos = true
 					force = true
 					// Now we only handle Table Changed DDL, maybe we will support more later.
-					if err = c.eventHandler.OnDDL(pos, e); err != nil {
+					if err = c.eventHandler.OnDDL(e, pos, ev.RawData); err != nil {
 						return errors.Trace(err)
 					}
 				}
@@ -168,6 +168,9 @@ func (c *Canal) runSyncBinlog() error {
 				c.master.UpdateGTIDSet(e.GSet)
 			}
 		default:
+			if err := c.eventHandler.OnDefault(&ev.Event, pos, ev.RawData); err != nil {
+				return errors.Trace(err)
+			}
 			continue
 		}
 
@@ -245,7 +248,7 @@ func (c *Canal) updateReplicationDelay(ev *replication.BinlogEvent) {
 	atomic.StoreUint32(c.delay, newDelay)
 }
 
-func (c *Canal) handleRowsEvent(e *replication.BinlogEvent) error {
+func (c *Canal) handleRowsEvent(e *replication.BinlogEvent, pos mysql.Position) error {
 	ev := e.Event.(*replication.RowsEvent)
 
 	// Caveat: table may be altered at runtime.
@@ -268,7 +271,7 @@ func (c *Canal) handleRowsEvent(e *replication.BinlogEvent) error {
 		return errors.Errorf("%s not supported now", e.Header.EventType)
 	}
 	events := newRowsEvent(t, action, ev.Rows, e.Header)
-	return c.eventHandler.OnRow(events)
+	return c.eventHandler.OnRow(ev, events, pos, e.RawData)
 }
 
 func (c *Canal) FlushBinlog() error {
